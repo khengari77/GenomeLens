@@ -209,7 +209,7 @@ fn execute_query(
     let mut vcf = VcfReader::new(reader);
     let header = vcf.read_header()?;
 
-    let vm = match &query.filter {
+    let mut vm = match &query.filter {
         Some(expr) => {
             let ops = genomelens_query::plan(expr, &header)?;
             Some(genomelens_query::Vm::new(ops))
@@ -232,7 +232,7 @@ fn execute_query(
             }
 
             while let Some(rec) = vcf.next_record()? {
-                let pass = match &vm {
+                let pass = match &mut vm {
                     Some(vm) => vm.evaluate(&rec)?,
                     None => true,
                 };
@@ -247,7 +247,7 @@ fn execute_query(
             out.write_all(b"\n")?;
 
             while let Some(rec) = vcf.next_record()? {
-                let pass = match &vm {
+                let pass = match &mut vm {
                     Some(vm) => vm.evaluate(&rec)?,
                     None => true,
                 };

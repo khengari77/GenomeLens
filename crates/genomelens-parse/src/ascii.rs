@@ -75,8 +75,8 @@ pub fn parse_ascii_i64(bytes: &[u8]) -> Result<i64> {
     Ok(if negative { -val } else { val })
 }
 
-/// Parse ASCII bytes to f64. Handles integer part, optional decimal point, and fractional part.
-/// Does NOT handle scientific notation (not needed for VCF QUAL fields).
+/// Parse ASCII bytes to f64. Delegates to the standard library's highly optimized
+/// string-to-float parser (Eisel-Lemire / Ryu) for mathematical correctness.
 pub fn parse_ascii_f64(bytes: &[u8]) -> Result<f64> {
     if bytes.is_empty() {
         return Err(Error::Parse {
@@ -84,50 +84,15 @@ pub fn parse_ascii_f64(bytes: &[u8]) -> Result<f64> {
             message: "empty float field".to_string(),
         });
     }
-
-    let mut pos = 0;
-    let negative = if bytes[0] == b'-' {
-        pos = 1;
-        true
-    } else {
-        false
-    };
-
-    // Integer part
-    let mut int_part: u64 = 0;
-    while pos < bytes.len() && bytes[pos] != b'.' {
-        let digit = bytes[pos].wrapping_sub(b'0');
-        if digit > 9 {
-            return Err(Error::Parse {
-                offset: pos,
-                message: format!("invalid digit byte: 0x{:02x}", bytes[pos]),
-            });
-        }
-        int_part = int_part * 10 + digit as u64;
-        pos += 1;
-    }
-
-    // Fractional part
-    let mut frac_part: f64 = 0.0;
-    if pos < bytes.len() && bytes[pos] == b'.' {
-        pos += 1; // skip the dot
-        let mut divisor: f64 = 10.0;
-        while pos < bytes.len() {
-            let digit = bytes[pos].wrapping_sub(b'0');
-            if digit > 9 {
-                return Err(Error::Parse {
-                    offset: pos,
-                    message: format!("invalid digit byte: 0x{:02x}", bytes[pos]),
-                });
-            }
-            frac_part += digit as f64 / divisor;
-            divisor *= 10.0;
-            pos += 1;
-        }
-    }
-
-    let val = int_part as f64 + frac_part;
-    Ok(if negative { -val } else { val })
+    // VCF fields are guaranteed ASCII, so from_utf8 is essentially free.
+    let s = std::str::from_utf8(bytes).map_err(|_| Error::Parse {
+        offset: 0,
+        message: "invalid UTF-8 in float field".to_string(),
+    })?;
+    s.parse::<f64>().map_err(|_| Error::Parse {
+        offset: 0,
+        message: format!("invalid float: {}", s),
+    })
 }
 
 #[cfg(test)]

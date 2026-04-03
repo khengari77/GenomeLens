@@ -29,15 +29,19 @@ pub enum OpCode {
 }
 
 /// Stack-machine evaluator. Instructions are stored in a contiguous `Vec`
-/// (cache-friendly), and the evaluation stack is pre-allocated with a small
-/// fixed capacity that stays in L1 cache.
+/// (cache-friendly), and the evaluation stack is a `Vec<bool>` allocated once
+/// at construction and reused across rows via `clear()`.
 pub struct Vm {
     ops: Vec<OpCode>,
+    stack: Vec<bool>,
 }
 
 impl Vm {
     pub fn new(ops: Vec<OpCode>) -> Self {
-        Self { ops }
+        Self {
+            ops,
+            stack: Vec::with_capacity(64),
+        }
     }
 
     /// Evaluate the compiled filter against a single VCF record.
@@ -46,97 +50,87 @@ impl Vm {
     /// This means `NOT INFO.DB` returns `true` when DB is absent — this is
     /// intentional closed-world semantics, not SQL ternary NULL logic.
     #[inline]
-    pub fn evaluate(&self, record: &VcfRecord<'_>) -> Result<bool> {
-        // Fixed-size stack on the call stack — no heap allocation.
-        // 32 bools = 32 bytes, fits in a single cache line.
-        let mut stack = [false; 32];
-        let mut sp: usize = 0;
+    pub fn evaluate(&mut self, record: &VcfRecord<'_>) -> Result<bool> {
+        self.stack.clear();
         let mut ip: usize = 0;
 
         while ip < self.ops.len() {
             match &self.ops[ip] {
                 OpCode::CmpChrom(cmp, val) => {
-                    stack[sp] = cmp_bytes(record.chrom()?, val, *cmp);
-                    sp += 1;
+                    self.stack.push(cmp_bytes(record.chrom()?, val, *cmp));
                 }
                 OpCode::CmpPos(cmp, val) => {
                     let pos = record.pos_usize()?;
-                    stack[sp] = cmp_ord(&pos, val, *cmp);
-                    sp += 1;
+                    self.stack.push(cmp_ord(&pos, val, *cmp));
                 }
                 OpCode::CmpQual(cmp, val) => {
-                    stack[sp] = match record.qual_f64()? {
+                    let result = match record.qual_f64()? {
                         Some(q) => cmp_f64(q, *val, *cmp),
                         None => false,
                     };
-                    sp += 1;
+                    self.stack.push(result);
                 }
                 OpCode::CmpFilter(cmp, val) => {
-                    stack[sp] = cmp_bytes(record.filter()?, val, *cmp);
-                    sp += 1;
+                    self.stack.push(cmp_bytes(record.filter()?, val, *cmp));
                 }
                 OpCode::CmpRef(cmp, val) => {
-                    stack[sp] = cmp_bytes(record.ref_allele()?, val, *cmp);
-                    sp += 1;
+                    self.stack.push(cmp_bytes(record.ref_allele()?, val, *cmp));
                 }
                 OpCode::CmpType(cmp, val) => {
-                    stack[sp] = cmp_eq_only(&record.variant_type()?, val, *cmp);
-                    sp += 1;
+                    self.stack.push(cmp_eq_only(&record.variant_type()?, val, *cmp));
                 }
                 OpCode::CmpInfoInt { key, op, value } => {
-                    stack[sp] = match record.info_value(key)? {
+                    let result = match record.info_value(key)? {
                         Some(Some(raw)) => {
                             let v = genomelens_parse::ascii::parse_ascii_i64(raw)?;
                             cmp_ord(&v, value, *op)
                         }
                         _ => false,
                     };
-                    sp += 1;
+                    self.stack.push(result);
                 }
                 OpCode::CmpInfoFloat { key, op, value } => {
-                    stack[sp] = match record.info_value(key)? {
+                    let result = match record.info_value(key)? {
                         Some(Some(raw)) => {
                             let v = genomelens_parse::ascii::parse_ascii_f64(raw)?;
                             cmp_f64(v, *value, *op)
                         }
                         _ => false,
                     };
-                    sp += 1;
+                    self.stack.push(result);
                 }
                 OpCode::CmpInfoStr { key, op, value } => {
-                    stack[sp] = match record.info_value(key)? {
+                    let result = match record.info_value(key)? {
                         Some(Some(raw)) => cmp_bytes(raw, value, *op),
                         _ => false,
                     };
-                    sp += 1;
+                    self.stack.push(result);
                 }
                 OpCode::InfoFlag(key) => {
-                    stack[sp] = record.info_value(key)?.is_some();
-                    sp += 1;
+                    self.stack.push(record.info_value(key)?.is_some());
                 }
                 OpCode::And => {
-                    let r = stack[sp - 1];
-                    let l = stack[sp - 2];
-                    sp -= 1;
-                    stack[sp - 1] = l && r;
+                    let r = self.stack.pop().unwrap_or(false);
+                    let l = self.stack.last_mut().unwrap();
+                    *l = *l && r;
                 }
                 OpCode::Or => {
-                    let r = stack[sp - 1];
-                    let l = stack[sp - 2];
-                    sp -= 1;
-                    stack[sp - 1] = l || r;
+                    let r = self.stack.pop().unwrap_or(false);
+                    let l = self.stack.last_mut().unwrap();
+                    *l = *l || r;
                 }
                 OpCode::Not => {
-                    stack[sp - 1] = !stack[sp - 1];
+                    let top = self.stack.last_mut().unwrap();
+                    *top = !*top;
                 }
                 OpCode::JumpIfFalse(target) => {
-                    if !stack[sp - 1] {
+                    if !*self.stack.last().unwrap() {
                         ip = *target;
                         continue;
                     }
                 }
                 OpCode::JumpIfTrue(target) => {
-                    if stack[sp - 1] {
+                    if *self.stack.last().unwrap() {
                         ip = *target;
                         continue;
                     }
@@ -145,7 +139,7 @@ impl Vm {
             ip += 1;
         }
 
-        Ok(if sp > 0 { stack[sp - 1] } else { false })
+        Ok(self.stack.last().copied().unwrap_or(false))
     }
 }
 
@@ -209,42 +203,42 @@ mod tests {
 
     #[test]
     fn vm_chrom_eq() {
-        let vm = Vm::new(vec![OpCode::CmpChrom(CmpOp::Eq, b"chr1".to_vec())]);
+        let mut vm = Vm::new(vec![OpCode::CmpChrom(CmpOp::Eq, b"chr1".to_vec())]);
         let rec = make_record(b"chr1\t100\t.\tA\tG\t50\tPASS\t.");
         assert!(vm.evaluate(&rec).unwrap());
     }
 
     #[test]
     fn vm_chrom_neq() {
-        let vm = Vm::new(vec![OpCode::CmpChrom(CmpOp::Eq, b"chr1".to_vec())]);
+        let mut vm = Vm::new(vec![OpCode::CmpChrom(CmpOp::Eq, b"chr1".to_vec())]);
         let rec = make_record(b"chr2\t100\t.\tA\tG\t50\tPASS\t.");
         assert!(!vm.evaluate(&rec).unwrap());
     }
 
     #[test]
     fn vm_pos_gt() {
-        let vm = Vm::new(vec![OpCode::CmpPos(CmpOp::Gt, 100)]);
+        let mut vm = Vm::new(vec![OpCode::CmpPos(CmpOp::Gt, 100)]);
         let rec = make_record(b"chr1\t200\t.\tA\tG\t50\tPASS\t.");
         assert!(vm.evaluate(&rec).unwrap());
     }
 
     #[test]
     fn vm_qual_gt() {
-        let vm = Vm::new(vec![OpCode::CmpQual(CmpOp::Gt, 50.0)]);
+        let mut vm = Vm::new(vec![OpCode::CmpQual(CmpOp::Gt, 50.0)]);
         let rec = make_record(b"chr1\t100\t.\tA\tG\t99.5\tPASS\t.");
         assert!(vm.evaluate(&rec).unwrap());
     }
 
     #[test]
     fn vm_qual_missing() {
-        let vm = Vm::new(vec![OpCode::CmpQual(CmpOp::Gt, 50.0)]);
+        let mut vm = Vm::new(vec![OpCode::CmpQual(CmpOp::Gt, 50.0)]);
         let rec = make_record(b"chr1\t100\t.\tA\tG\t.\tPASS\t.");
         assert!(!vm.evaluate(&rec).unwrap());
     }
 
     #[test]
     fn vm_info_int() {
-        let vm = Vm::new(vec![OpCode::CmpInfoInt {
+        let mut vm = Vm::new(vec![OpCode::CmpInfoInt {
             key: b"DP".to_vec(),
             op: CmpOp::Gt,
             value: 10,
@@ -255,7 +249,7 @@ mod tests {
 
     #[test]
     fn vm_info_float() {
-        let vm = Vm::new(vec![OpCode::CmpInfoFloat {
+        let mut vm = Vm::new(vec![OpCode::CmpInfoFloat {
             key: b"AF".to_vec(),
             op: CmpOp::Gt,
             value: 0.05,
@@ -266,7 +260,7 @@ mod tests {
 
     #[test]
     fn vm_info_missing() {
-        let vm = Vm::new(vec![OpCode::CmpInfoInt {
+        let mut vm = Vm::new(vec![OpCode::CmpInfoInt {
             key: b"DP".to_vec(),
             op: CmpOp::Gt,
             value: 10,
@@ -277,21 +271,21 @@ mod tests {
 
     #[test]
     fn vm_info_flag() {
-        let vm = Vm::new(vec![OpCode::InfoFlag(b"DB".to_vec())]);
+        let mut vm = Vm::new(vec![OpCode::InfoFlag(b"DB".to_vec())]);
         let rec = make_record(b"chr1\t100\t.\tA\tG\t50\tPASS\tDP=10;DB");
         assert!(vm.evaluate(&rec).unwrap());
     }
 
     #[test]
     fn vm_info_flag_missing() {
-        let vm = Vm::new(vec![OpCode::InfoFlag(b"DB".to_vec())]);
+        let mut vm = Vm::new(vec![OpCode::InfoFlag(b"DB".to_vec())]);
         let rec = make_record(b"chr1\t100\t.\tA\tG\t50\tPASS\tDP=10");
         assert!(!vm.evaluate(&rec).unwrap());
     }
 
     #[test]
     fn vm_type_snv() {
-        let vm = Vm::new(vec![OpCode::CmpType(CmpOp::Eq, VariantType::Snv)]);
+        let mut vm = Vm::new(vec![OpCode::CmpType(CmpOp::Eq, VariantType::Snv)]);
         let rec = make_record(b"chr1\t100\t.\tA\tG\t50\tPASS\t.");
         assert!(vm.evaluate(&rec).unwrap());
     }
@@ -299,7 +293,7 @@ mod tests {
     #[test]
     fn vm_and_postfix() {
         // CHROM = 'chr1' AND QUAL >= 50
-        let vm = Vm::new(vec![
+        let mut vm = Vm::new(vec![
             OpCode::CmpChrom(CmpOp::Eq, b"chr1".to_vec()),
             OpCode::CmpQual(CmpOp::Gte, 50.0),
             OpCode::And,
@@ -310,7 +304,7 @@ mod tests {
 
     #[test]
     fn vm_and_false() {
-        let vm = Vm::new(vec![
+        let mut vm = Vm::new(vec![
             OpCode::CmpChrom(CmpOp::Eq, b"chr1".to_vec()),
             OpCode::CmpQual(CmpOp::Gt, 90.0),
             OpCode::And,
@@ -321,7 +315,7 @@ mod tests {
 
     #[test]
     fn vm_or_postfix() {
-        let vm = Vm::new(vec![
+        let mut vm = Vm::new(vec![
             OpCode::CmpChrom(CmpOp::Eq, b"chr1".to_vec()),
             OpCode::CmpChrom(CmpOp::Eq, b"chr2".to_vec()),
             OpCode::Or,
@@ -332,7 +326,7 @@ mod tests {
 
     #[test]
     fn vm_not_postfix() {
-        let vm = Vm::new(vec![
+        let mut vm = Vm::new(vec![
             OpCode::CmpChrom(CmpOp::Eq, b"chr2".to_vec()),
             OpCode::Not,
         ]);
@@ -344,7 +338,7 @@ mod tests {
     fn vm_complex_expression() {
         // (CHROM = 'chr1' OR CHROM = 'chr2') AND QUAL > 50
         // Postfix: [CmpChrom(chr1), CmpChrom(chr2), Or, CmpQual(>50), And]
-        let vm = Vm::new(vec![
+        let mut vm = Vm::new(vec![
             OpCode::CmpChrom(CmpOp::Eq, b"chr1".to_vec()),
             OpCode::CmpChrom(CmpOp::Eq, b"chr2".to_vec()),
             OpCode::Or,
@@ -360,7 +354,7 @@ mod tests {
 
     #[test]
     fn vm_empty_ops_returns_false() {
-        let vm = Vm::new(vec![]);
+        let mut vm = Vm::new(vec![]);
         let rec = make_record(b"chr1\t100\t.\tA\tG\t50\tPASS\t.");
         assert!(!vm.evaluate(&rec).unwrap());
     }
@@ -368,7 +362,7 @@ mod tests {
     #[test]
     fn vm_float_eq_tolerance() {
         // Test that float equality uses 1e-6 tolerance
-        let vm = Vm::new(vec![OpCode::CmpQual(CmpOp::Eq, 50.0)]);
+        let mut vm = Vm::new(vec![OpCode::CmpQual(CmpOp::Eq, 50.0)]);
         let rec = make_record(b"chr1\t100\t.\tA\tG\t50\tPASS\t.");
         assert!(vm.evaluate(&rec).unwrap());
     }
@@ -383,7 +377,7 @@ mod tests {
             ops.push(OpCode::CmpQual(CmpOp::Gt, 10.0));
             ops.push(OpCode::And);
         }
-        let vm = Vm::new(ops);
+        let mut vm = Vm::new(ops);
         let rec = make_record(b"chr1\t100\t.\tA\tG\t50\tPASS\t.");
         assert!(vm.evaluate(&rec).unwrap());
     }
@@ -391,7 +385,7 @@ mod tests {
     #[test]
     fn vm_not_flag_missing_is_true() {
         // NOT INFO.DB where DB is absent → true (closed-world assumption)
-        let vm = Vm::new(vec![
+        let mut vm = Vm::new(vec![
             OpCode::InfoFlag(b"DB".to_vec()),
             OpCode::Not,
         ]);
@@ -404,7 +398,7 @@ mod tests {
         // CHROM = 'chr2' AND INFO.DP > 10
         // With jumps: [CmpChrom(chr2), JumpIfFalse(4), CmpInfoInt(DP>10), And]
         // On chr1 record: CHROM fails → jump skips INFO parsing entirely
-        let vm = Vm::new(vec![
+        let mut vm = Vm::new(vec![
             OpCode::CmpChrom(CmpOp::Eq, b"chr2".to_vec()),
             OpCode::JumpIfFalse(4),
             OpCode::CmpInfoInt { key: b"DP".to_vec(), op: CmpOp::Gt, value: 10 },
@@ -419,7 +413,7 @@ mod tests {
         // CHROM = 'chr1' OR INFO.DP > 10
         // With jumps: [CmpChrom(chr1), JumpIfTrue(4), CmpInfoInt(DP>10), Or]
         // On chr1 record: CHROM succeeds → jump skips INFO parsing entirely
-        let vm = Vm::new(vec![
+        let mut vm = Vm::new(vec![
             OpCode::CmpChrom(CmpOp::Eq, b"chr1".to_vec()),
             OpCode::JumpIfTrue(4),
             OpCode::CmpInfoInt { key: b"DP".to_vec(), op: CmpOp::Gt, value: 10 },
