@@ -1,0 +1,15 @@
+[package]
+name = "genomelens-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "genomelens"
+path = "src/main.rs"
+
+[dependencies]
+genomelens-core.workspace = true
+genomelens-parse.workspace = true
+genomelens-query.workspace = true
+clap.workspace = true
+comfy-table.workspace = true

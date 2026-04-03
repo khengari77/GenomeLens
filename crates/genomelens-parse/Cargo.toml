@@ -1,0 +1,18 @@
+[package]
+name = "genomelens-parse"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+genomelens-core.workspace = true
+memchr.workspace = true
+flate2.workspace = true
+noodles-bgzf.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+noodles-fasta.workspace = true
+noodles-vcf.workspace = true
+tempfile.workspace = true
+flate2.workspace = true

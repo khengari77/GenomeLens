@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/genomelens-core",
+    "crates/genomelens-parse",
+    "crates/genomelens-cli",
+    "crates/genomelens-query",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+genomelens-core = { path = "crates/genomelens-core" }
+genomelens-parse = { path = "crates/genomelens-parse" }
+genomelens-query = { path = "crates/genomelens-query" }
+logos = "0.14"
+memchr = "2"
+flate2 = "1"
+noodles-bgzf = "0.33"
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+comfy-table = "7"
+proptest = "1"
+noodles-fasta = "0.42"
+noodles-vcf = "0.68"
+tempfile = "3"

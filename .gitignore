@@ -1,0 +1,27 @@
+# Build artifacts
+/target
+
+# Cargo.lock is checked in for binaries, but if this were a library-only
+# workspace you'd ignore it. Keeping it tracked since genomelens-cli is a bin.
+
+# Editor / IDE
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Rust
+**/*.rs.bk
+
+# Environment / secrets
+.env
+.env.*
+
+# Agents
+.claude/

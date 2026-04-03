@@ -1,0 +1,12 @@
+[package]
+name = "genomelens-query"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+genomelens-core.workspace = true
+genomelens-parse.workspace = true
+logos.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

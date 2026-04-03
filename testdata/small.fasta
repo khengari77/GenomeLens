@@ -1,0 +1,6 @@
+>seq1 Human chr1 fragment
+ATCGATCGATCG
+>seq2 GC-rich
+GCGCGCGCGCGC
+>seq3 with_N
+ATCNNNGATC
