@@ -1,4 +1,4 @@
-use genomelens_core::{Error, Result, VariantType, VcfValueType};
+use genomelens_core::{Error, Result, VariantType, VcfNumber, VcfValueType};
 use genomelens_parse::VcfHeader;
 
 use crate::ast::{CmpOp, Column, Expr, FixedColumn, Literal};
@@ -98,6 +98,10 @@ fn compile_fixed_compare(
     Ok(())
 }
 
+fn is_scalar(number: &VcfNumber) -> bool {
+    matches!(number, VcfNumber::Count(0) | VcfNumber::Count(1))
+}
+
 fn compile_info_compare(
     field: &str,
     op: CmpOp,
@@ -108,26 +112,41 @@ fn compile_info_compare(
     let key = field.as_bytes().to_vec();
 
     match header.info_field(field) {
-        Some(def) => match def.ty {
-            VcfValueType::Integer => {
-                let v = expect_int(value, field)?;
-                ops.push(OpCode::CmpInfoInt { key, op, value: v });
+        Some(def) => {
+            let scalar = is_scalar(&def.number);
+            match def.ty {
+                VcfValueType::Integer => {
+                    let v = expect_int(value, field)?;
+                    if scalar {
+                        ops.push(OpCode::CmpInfoInt { key, op, value: v });
+                    } else {
+                        ops.push(OpCode::AnyCmpInfoInt { key, op, value: v });
+                    }
+                }
+                VcfValueType::Float => {
+                    let v = coerce_to_f64(value, field)?;
+                    if scalar {
+                        ops.push(OpCode::CmpInfoFloat { key, op, value: v });
+                    } else {
+                        ops.push(OpCode::AnyCmpInfoFloat { key, op, value: v });
+                    }
+                }
+                VcfValueType::String | VcfValueType::Character => {
+                    let s = expect_str(value, field)?;
+                    if scalar {
+                        ops.push(OpCode::CmpInfoStr { key, op, value: s.into_bytes() });
+                    } else {
+                        ops.push(OpCode::AnyCmpInfoStr { key, op, value: s.into_bytes() });
+                    }
+                }
+                VcfValueType::Flag => {
+                    return Err(Error::InvalidQuery(format!(
+                        "INFO.{} is a Flag — use it without a comparison operator",
+                        field
+                    )));
+                }
             }
-            VcfValueType::Float => {
-                let v = coerce_to_f64(value, field)?;
-                ops.push(OpCode::CmpInfoFloat { key, op, value: v });
-            }
-            VcfValueType::String | VcfValueType::Character => {
-                let s = expect_str(value, field)?;
-                ops.push(OpCode::CmpInfoStr { key, op, value: s.into_bytes() });
-            }
-            VcfValueType::Flag => {
-                return Err(Error::InvalidQuery(format!(
-                    "INFO.{} is a Flag — use it without a comparison operator",
-                    field
-                )));
-            }
-        },
+        }
         None => {
             return Err(Error::InvalidQuery(format!(
                 "INFO field '{}' not found in header",
@@ -241,11 +260,12 @@ mod tests {
     }
 
     #[test]
-    fn plan_info_float() {
+    fn plan_info_float_multi_value() {
+        // AF is Number=A → should emit AnyCmpInfoFloat
         let header = test_header();
         let expr = parse_filter("INFO.AF > 0.05").unwrap();
         let ops = plan(&expr, &header).unwrap();
-        assert_eq!(ops, vec![OpCode::CmpInfoFloat { key: b"AF".to_vec(), op: CmpOp::Gt, value: 0.05 }]);
+        assert_eq!(ops, vec![OpCode::AnyCmpInfoFloat { key: b"AF".to_vec(), op: CmpOp::Gt, value: 0.05 }]);
     }
 
     #[test]
@@ -319,6 +339,20 @@ mod tests {
         let header = test_header();
         let expr = parse_filter("INFO.DP = 'foo'").unwrap();
         assert!(plan(&expr, &header).is_err());
+    }
+
+    #[test]
+    fn plan_scalar_vs_multi_value() {
+        let header = test_header();
+        // DP is Number=1 → scalar CmpInfoInt
+        let expr = parse_filter("INFO.DP > 10").unwrap();
+        let ops = plan(&expr, &header).unwrap();
+        assert!(matches!(ops[0], OpCode::CmpInfoInt { .. }));
+
+        // AF is Number=A → multi-value AnyCmpInfoFloat
+        let expr = parse_filter("INFO.AF > 0.5").unwrap();
+        let ops = plan(&expr, &header).unwrap();
+        assert!(matches!(ops[0], OpCode::AnyCmpInfoFloat { .. }));
     }
 
     #[test]

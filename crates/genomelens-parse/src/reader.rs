@@ -9,9 +9,22 @@ pub enum FileFormat {
     Vcf,
 }
 
+/// Check if a gzip file is BGZF by inspecting the header.
+/// BGZF has FEXTRA flag (byte 3 bit 2) and "BC" subfield at bytes 12-13.
+fn is_bgzf(path: &Path) -> io::Result<bool> {
+    let mut file = File::open(path)?;
+    let mut buf = [0u8; 18];
+    let n = file.read(&mut buf)?;
+    if n < 14 {
+        return Ok(false);
+    }
+    Ok((buf[3] & 0x04) != 0 && buf[12] == b'B' && buf[13] == b'C')
+}
+
 /// Opens a file and returns a buffered reader that transparently decompresses gzip/BGZF.
 /// Detection is by magic bytes (0x1f 0x8b), not file extension.
-/// Uses noodles-bgzf for decompression, enabling future random access via tabix/CSI indices.
+/// Uses flate2 MultiGzDecoder for sequential streaming (handles both gzip and BGZF).
+/// For indexed random access, use `open_bgzf` instead.
 pub fn open_transparent(path: &Path) -> io::Result<Box<dyn BufRead>> {
     let mut file = File::open(path)?;
     let mut magic = [0u8; 2];
@@ -21,9 +34,7 @@ pub fn open_transparent(path: &Path) -> io::Result<Box<dyn BufRead>> {
     let file = File::open(path)?;
 
     if n >= 2 && magic[0] == 0x1f && magic[1] == 0x8b {
-        // Gzip/BGZF — use flate2 MultiGzDecoder for sequential streaming.
-        // MultiGzDecoder handles both standard gzip and BGZF (concatenated gzip blocks).
-        // noodles-bgzf is available as a dependency for future random-access via index files.
+        // Gzip/BGZF — flate2 handles both for sequential streaming.
         Ok(Box::new(BufReader::new(
             flate2::read::MultiGzDecoder::new(file),
         )))

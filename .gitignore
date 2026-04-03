@@ -23,5 +23,9 @@ Thumbs.db
 .env
 .env.*
 
+# Large test data (exceeds GitHub 50MB limit)
+testdata/*.vcf.gz
+!testdata/small.vcf.gz
+
 # Agents
 .claude/

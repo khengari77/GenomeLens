@@ -16,6 +16,10 @@ pub enum OpCode {
     CmpInfoInt { key: Vec<u8>, op: CmpOp, value: i64 },
     CmpInfoFloat { key: Vec<u8>, op: CmpOp, value: f64 },
     CmpInfoStr { key: Vec<u8>, op: CmpOp, value: Vec<u8> },
+    /// Multi-value (Number=A/R/G/.): true if ANY comma-separated element matches.
+    AnyCmpInfoInt { key: Vec<u8>, op: CmpOp, value: i64 },
+    AnyCmpInfoFloat { key: Vec<u8>, op: CmpOp, value: f64 },
+    AnyCmpInfoStr { key: Vec<u8>, op: CmpOp, value: Vec<u8> },
     /// Push true if the INFO flag key is present on the record.
     /// Missing fields evaluate to false (strict boolean, not SQL ternary NULL).
     InfoFlag(Vec<u8>),
@@ -102,6 +106,41 @@ impl Vm {
                 OpCode::CmpInfoStr { key, op, value } => {
                     let result = match record.info_value(key)? {
                         Some(Some(raw)) => cmp_bytes(raw, value, *op),
+                        _ => false,
+                    };
+                    self.stack.push(result);
+                }
+                OpCode::AnyCmpInfoInt { key, op, value } => {
+                    let result = match record.info_value(key)? {
+                        Some(Some(raw)) => {
+                            raw.split(|&b| b == b',').any(|part| {
+                                genomelens_parse::ascii::parse_ascii_i64(part)
+                                    .map(|v| cmp_ord(&v, value, *op))
+                                    .unwrap_or(false)
+                            })
+                        }
+                        _ => false,
+                    };
+                    self.stack.push(result);
+                }
+                OpCode::AnyCmpInfoFloat { key, op, value } => {
+                    let result = match record.info_value(key)? {
+                        Some(Some(raw)) => {
+                            raw.split(|&b| b == b',').any(|part| {
+                                genomelens_parse::ascii::parse_ascii_f64(part)
+                                    .map(|v| cmp_f64(v, *value, *op))
+                                    .unwrap_or(false)
+                            })
+                        }
+                        _ => false,
+                    };
+                    self.stack.push(result);
+                }
+                OpCode::AnyCmpInfoStr { key, op, value } => {
+                    let result = match record.info_value(key)? {
+                        Some(Some(raw)) => {
+                            raw.split(|&b| b == b',').any(|part| cmp_bytes(part, value, *op))
+                        }
                         _ => false,
                     };
                     self.stack.push(result);
@@ -420,6 +459,72 @@ mod tests {
             OpCode::Or,
         ]);
         let rec = make_record(b"chr1\t100\t.\tA\tG\t50\tPASS\tDP=5");
+        assert!(vm.evaluate(&rec).unwrap());
+    }
+
+    #[test]
+    fn vm_any_info_float_match() {
+        let mut vm = Vm::new(vec![OpCode::AnyCmpInfoFloat {
+            key: b"AF".to_vec(),
+            op: CmpOp::Gt,
+            value: 0.5,
+        }]);
+        let rec = make_record(b"chr1\t100\t.\tA\tG,T\t50\tPASS\tAF=0.001,0.6");
+        assert!(vm.evaluate(&rec).unwrap());
+    }
+
+    #[test]
+    fn vm_any_info_float_no_match() {
+        let mut vm = Vm::new(vec![OpCode::AnyCmpInfoFloat {
+            key: b"AF".to_vec(),
+            op: CmpOp::Gt,
+            value: 0.5,
+        }]);
+        let rec = make_record(b"chr1\t100\t.\tA\tG,T\t50\tPASS\tAF=0.001,0.02");
+        assert!(!vm.evaluate(&rec).unwrap());
+    }
+
+    #[test]
+    fn vm_any_info_int_match() {
+        let mut vm = Vm::new(vec![OpCode::AnyCmpInfoInt {
+            key: b"AC".to_vec(),
+            op: CmpOp::Gt,
+            value: 10,
+        }]);
+        let rec = make_record(b"chr1\t100\t.\tA\tG,T\t50\tPASS\tAC=1,50");
+        assert!(vm.evaluate(&rec).unwrap());
+    }
+
+    #[test]
+    fn vm_any_info_float_single_value() {
+        let mut vm = Vm::new(vec![OpCode::AnyCmpInfoFloat {
+            key: b"AF".to_vec(),
+            op: CmpOp::Gt,
+            value: 0.5,
+        }]);
+        let rec = make_record(b"chr1\t100\t.\tA\tG\t50\tPASS\tAF=0.6");
+        assert!(vm.evaluate(&rec).unwrap());
+    }
+
+    #[test]
+    fn vm_any_info_float_missing() {
+        let mut vm = Vm::new(vec![OpCode::AnyCmpInfoFloat {
+            key: b"AF".to_vec(),
+            op: CmpOp::Gt,
+            value: 0.5,
+        }]);
+        let rec = make_record(b"chr1\t100\t.\tA\tG\t50\tPASS\t.");
+        assert!(!vm.evaluate(&rec).unwrap());
+    }
+
+    #[test]
+    fn vm_any_info_str_match() {
+        let mut vm = Vm::new(vec![OpCode::AnyCmpInfoStr {
+            key: b"VT".to_vec(),
+            op: CmpOp::Eq,
+            value: b"SNP".to_vec(),
+        }]);
+        let rec = make_record(b"chr1\t100\t.\tA\tG\t50\tPASS\tVT=SNP,INDEL");
         assert!(vm.evaluate(&rec).unwrap());
     }
 }
