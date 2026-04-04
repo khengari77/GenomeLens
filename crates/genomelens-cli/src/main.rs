@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use comfy_table::presets::UTF8_FULL;
 use comfy_table::Table;
-use genomelens_core::{FastaStatsAccumulator, VariantType, VcfStatsAccumulator};
+use genomelens_core::{FastaStatsAccumulator, VariantType, VcfDashboardAccumulator, VcfStatsAccumulator};
 use genomelens_parse::{
     detect_format, open_transparent, FastaReader, FileFormat, VcfReader,
 };
@@ -21,6 +21,14 @@ enum Command {
     /// Print summary statistics for a FASTA or VCF file
     Stats {
         /// Path to FASTA or VCF file (supports .gz compressed)
+        file: PathBuf,
+        /// Output as JSON instead of table
+        #[arg(long)]
+        json: bool,
+    },
+    /// Compute rich dashboard statistics for a VCF file (JSON output)
+    Dashboard {
+        /// Path to VCF file (supports .gz compressed)
         file: PathBuf,
     },
     /// Query VCF records with SELECT projection and WHERE filter (TSV output)
@@ -63,12 +71,16 @@ fn main() {
 
 fn run(cli: Cli) -> genomelens_core::Result<()> {
     match cli.command {
-        Command::Stats { file } => {
+        Command::Stats { file, json } => {
             let mut reader = open_transparent(&file)?;
             match detect_format(&mut reader)? {
-                FileFormat::Fasta => cmd_stats_fasta(reader),
-                FileFormat::Vcf => cmd_stats_vcf(reader),
+                FileFormat::Fasta => cmd_stats_fasta(reader, json),
+                FileFormat::Vcf => cmd_stats_vcf(reader, json),
             }
+        }
+        Command::Dashboard { file } => {
+            let reader = open_transparent(&file)?;
+            cmd_dashboard_vcf(reader)
         }
         Command::Query { file, query } => {
             let reader = open_transparent(&file)?;
@@ -98,7 +110,7 @@ fn run(cli: Cli) -> genomelens_core::Result<()> {
     }
 }
 
-fn cmd_stats_fasta(reader: impl BufRead) -> genomelens_core::Result<()> {
+fn cmd_stats_fasta(reader: impl BufRead, json: bool) -> genomelens_core::Result<()> {
     let mut fasta = FastaReader::new(reader);
     let mut acc = FastaStatsAccumulator::new();
 
@@ -107,6 +119,11 @@ fn cmd_stats_fasta(reader: impl BufRead) -> genomelens_core::Result<()> {
     }
 
     let stats = acc.finish();
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&stats).unwrap());
+        return Ok(());
+    }
 
     let mut table = Table::new();
     table.load_preset(UTF8_FULL);
@@ -130,7 +147,7 @@ fn cmd_stats_fasta(reader: impl BufRead) -> genomelens_core::Result<()> {
     Ok(())
 }
 
-fn cmd_stats_vcf(reader: impl BufRead) -> genomelens_core::Result<()> {
+fn cmd_stats_vcf(reader: impl BufRead, json: bool) -> genomelens_core::Result<()> {
     let mut vcf = VcfReader::new(reader);
     let header = vcf.read_header()?;
     let mut acc = VcfStatsAccumulator::new(header.sample_names.len());
@@ -146,6 +163,12 @@ fn cmd_stats_vcf(reader: impl BufRead) -> genomelens_core::Result<()> {
     }
 
     let stats = acc.finish();
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&stats).unwrap());
+        return Ok(());
+    }
+
     let chroms: Vec<_> = stats.chromosomes.iter().map(|c| c.as_str()).collect();
 
     let mut table = Table::new();
@@ -170,6 +193,57 @@ fn cmd_stats_vcf(reader: impl BufRead) -> genomelens_core::Result<()> {
     ]);
 
     println!("{table}");
+    Ok(())
+}
+
+fn cmd_dashboard_vcf(reader: impl BufRead) -> genomelens_core::Result<()> {
+    let mut vcf = VcfReader::new(reader);
+    let header = vcf.read_header()?;
+
+    let has_af = header.info_field("AF").is_some();
+    let has_dp = header.info_field("DP").is_some();
+    let mut acc = VcfDashboardAccumulator::new(header.sample_names.len(), has_af, has_dp);
+
+    while let Some(rec) = vcf.next_record()? {
+        let chrom = std::str::from_utf8(rec.chrom()?).unwrap_or("");
+        let variant_type = rec.variant_type()?;
+        let is_pass = rec.is_pass()?;
+        let is_multiallelic = rec.is_multiallelic()?;
+        let is_transition = rec.is_transition()?;
+        let qual = rec.qual_f64()?;
+
+        let af_raw = if has_af {
+            match rec.info_value(b"AF")? {
+                Some(Some(v)) => Some(v),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        let dp_raw = if has_dp {
+            match rec.info_value(b"DP")? {
+                Some(Some(v)) => Some(v),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        acc.add(
+            chrom,
+            &variant_type,
+            is_pass,
+            is_multiallelic,
+            is_transition,
+            qual,
+            af_raw,
+            dp_raw,
+        );
+    }
+
+    let stats = acc.finish();
+    println!("{}", serde_json::to_string_pretty(&stats).unwrap());
     Ok(())
 }
 

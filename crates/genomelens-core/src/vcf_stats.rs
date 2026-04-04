@@ -14,7 +14,7 @@ pub struct VcfRecordSummary {
 }
 
 /// Aggregate statistics for a VCF file.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct VcfStats {
     pub variant_count: usize,
     pub sample_count: usize,

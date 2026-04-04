@@ -1,7 +1,7 @@
 use crate::SequenceSummary;
 
 /// Aggregate statistics for a FASTA file.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct FastaStats {
     pub sequence_count: usize,
     pub total_length: usize,

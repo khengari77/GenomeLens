@@ -5,6 +5,8 @@ edition.workspace = true
 
 [dependencies]
 thiserror.workspace = true
+serde.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+serde_json.workspace = true

@@ -1,5 +1,6 @@
 /// A chromosome or contig identifier.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize)]
+#[serde(transparent)]
 pub struct Chromosome(pub String);
 
 impl Chromosome {

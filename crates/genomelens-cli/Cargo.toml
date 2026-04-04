@@ -13,3 +13,4 @@ genomelens-parse.workspace = true
 genomelens-query.workspace = true
 clap.workspace = true
 comfy-table.workspace = true
+serde_json.workspace = true
