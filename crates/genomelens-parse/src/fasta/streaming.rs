@@ -176,6 +176,8 @@ impl<R: BufRead> FastaReader<R> {
                     let line = trim_newline(&self.line_buf);
                     for &b in line {
                         match b {
+                            // Skip whitespace and digits (FASTA formatting characters)
+                            b' ' | b'\t' | b'\r' | b'0'..=b'9' => {}
                             b'G' | b'C' | b'g' | b'c' => {
                                 gc_count += 1;
                                 length += 1;
@@ -267,6 +269,31 @@ mod tests {
         assert_eq!(rec2.summarize().length, 4);
 
         assert!(reader.next_record().unwrap().is_none());
+    }
+
+    #[test]
+    fn streaming_whitespace_and_digits_ignored() {
+        // FASTA spec: spaces, tabs, and digits are formatting characters, not bases
+        let data = b">seq1\nAC GT\n1234\nNN\tCC\n";
+        let mut reader = FastaReader::new(Cursor::new(data.as_slice()));
+
+        let rec = reader.next_record().unwrap().unwrap();
+        let summary = rec.summarize();
+        // Only A, C, G, T, N, N, C, C = 8 bases (spaces, tab, digits skipped)
+        assert_eq!(summary.length, 8);
+        assert_eq!(summary.gc_count, 4); // C, G, C, C
+        assert_eq!(summary.n_count, 2);
+    }
+
+    #[test]
+    fn next_stats_whitespace_and_digits_ignored() {
+        let data = b">seq1\nAC GT\n1234\nNN\tCC\n";
+        let mut reader = FastaReader::new(Cursor::new(data.as_slice()));
+
+        let stats = reader.next_stats().unwrap().unwrap();
+        assert_eq!(stats.length, 8);
+        assert_eq!(stats.gc_count, 4);
+        assert_eq!(stats.n_count, 2);
     }
 
     #[test]

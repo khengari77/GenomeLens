@@ -66,6 +66,8 @@ pub enum VariantType {
     Deletion,
     /// Multi-nucleotide variant (same length, > 1).
     Mnv,
+    /// Monomorphic reference site (ALT is `.` or `*`).
+    Ref,
     /// Everything else (symbolic, mixed, structural).
     Complex,
 }

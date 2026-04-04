@@ -32,7 +32,8 @@ impl<'a> FastaRecord<'a> {
 
         for &b in self.seq_region {
             match b {
-                b'\n' | b'\r' => continue,
+                // Skip whitespace and digits (FASTA formatting characters)
+                b' ' | b'\t' | b'\r' | b'\n' | b'0'..=b'9' => continue,
                 b'G' | b'C' | b'g' | b'c' => {
                     gc += 1;
                     length += 1;
@@ -63,7 +64,7 @@ impl<'a> FastaRecord<'a> {
             .seq_region
             .iter()
             .copied()
-            .filter(|&b| b != b'\n' && b != b'\r')
+            .filter(|&b| !matches!(b, b' ' | b'\t' | b'\r' | b'\n' | b'0'..=b'9'))
             .collect();
 
         SequenceView {

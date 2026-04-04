@@ -262,7 +262,10 @@ fn parse_angle_bracket_fields(inner: &[u8]) -> Result<Vec<(&[u8], &[u8])>> {
             // Quoted value: scan for closing quote
             let quote_content_start = value_start + 1;
             let mut end = quote_content_start;
-            while end < inner.len() && inner[end] != b'"' {
+            while end < inner.len() {
+                if inner[end] == b'"' && (end == 0 || inner[end - 1] != b'\\') {
+                    break;
+                }
                 end += 1;
             }
             let value = &inner[quote_content_start..end];
@@ -403,6 +406,20 @@ mod tests {
         assert_eq!(
             header.info_fields[0].description,
             "Consequence, as predicted by VEP"
+        );
+    }
+
+    #[test]
+    fn parse_escaped_quotes_in_description() {
+        let input = b"##fileformat=VCFv4.3\n\
+            ##INFO=<ID=CSQ,Number=.,Type=String,Description=\"A \\\"quoted\\\" value\">\n\
+            #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n";
+
+        let (header, _) = VcfHeader::parse(input).unwrap();
+        assert_eq!(header.info_fields[0].id, "CSQ");
+        assert_eq!(
+            header.info_fields[0].description,
+            "A \\\"quoted\\\" value"
         );
     }
 

@@ -211,9 +211,10 @@ fn parse_variant_type(s: &str) -> Result<VariantType> {
         "INSERTION" => Ok(VariantType::Insertion),
         "DELETION" => Ok(VariantType::Deletion),
         "MNV" => Ok(VariantType::Mnv),
+        "REF" => Ok(VariantType::Ref),
         "COMPLEX" => Ok(VariantType::Complex),
         _ => Err(Error::InvalidQuery(format!(
-            "unknown variant type: '{}'. Valid values: SNV, Insertion, Deletion, Mnv, Complex",
+            "unknown variant type: '{}'. Valid values: SNV, Insertion, Deletion, Mnv, Ref, Complex",
             s
         ))),
     }

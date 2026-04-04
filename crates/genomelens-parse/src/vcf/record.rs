@@ -276,7 +276,7 @@ impl<'a> VcfRecord<'a> {
     pub fn variant_type(&self) -> Result<VariantType> {
         let first_alt = match self.alt_iter()?.next() {
             Some(alt) if alt != b"." && alt != b"*" => alt,
-            _ => return Ok(VariantType::Complex),
+            _ => return Ok(VariantType::Ref),
         };
 
         if first_alt.first() == Some(&b'<') {
@@ -512,6 +512,20 @@ mod tests {
     }
 
     #[test]
+    fn variant_type_ref_dot() {
+        let line = b"chr1\t100\t.\tA\t.\t50\tPASS\t.";
+        let rec = parse_line(line);
+        assert_eq!(rec.variant_type().unwrap(), VariantType::Ref);
+    }
+
+    #[test]
+    fn variant_type_ref_star() {
+        let line = b"chr1\t100\t.\tA\t*\t50\tPASS\t.";
+        let rec = parse_line(line);
+        assert_eq!(rec.variant_type().unwrap(), VariantType::Ref);
+    }
+
+    #[test]
     fn is_pass_true() {
         let line = b"chr1\t100\t.\tA\tG\t50\tPASS\t.";
         let rec = parse_line(line);
@@ -682,6 +696,7 @@ mod prop_tests {
                 VariantType::Deletion => {
                     prop_assert!(ref_len > alt_len);
                 }
+                VariantType::Ref => {}
                 VariantType::Complex => {}
             }
         }

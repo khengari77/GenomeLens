@@ -55,6 +55,7 @@ impl VcfStats {
                 VariantType::Insertion => stats.insertion_count += 1,
                 VariantType::Deletion => stats.deletion_count += 1,
                 VariantType::Mnv => stats.mnv_count += 1,
+                VariantType::Ref => {}
                 VariantType::Complex => stats.complex_count += 1,
             }
 
@@ -156,6 +157,7 @@ impl VcfStatsAccumulator {
             VariantType::Insertion => self.insertion_count += 1,
             VariantType::Deletion => self.deletion_count += 1,
             VariantType::Mnv => self.mnv_count += 1,
+            VariantType::Ref => {}
             VariantType::Complex => self.complex_count += 1,
         }
 

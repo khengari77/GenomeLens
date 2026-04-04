@@ -114,6 +114,7 @@ impl Vm {
                     let result = match record.info_value(key)? {
                         Some(Some(raw)) => {
                             raw.split(|&b| b == b',').any(|part| {
+                                if part == b"." { return false; }
                                 genomelens_parse::ascii::parse_ascii_i64(part)
                                     .map(|v| cmp_ord(&v, value, *op))
                                     .unwrap_or(false)
@@ -127,6 +128,7 @@ impl Vm {
                     let result = match record.info_value(key)? {
                         Some(Some(raw)) => {
                             raw.split(|&b| b == b',').any(|part| {
+                                if part == b"." { return false; }
                                 genomelens_parse::ascii::parse_ascii_f64(part)
                                     .map(|v| cmp_f64(v, *value, *op))
                                     .unwrap_or(false)
@@ -139,7 +141,10 @@ impl Vm {
                 OpCode::AnyCmpInfoStr { key, op, value } => {
                     let result = match record.info_value(key)? {
                         Some(Some(raw)) => {
-                            raw.split(|&b| b == b',').any(|part| cmp_bytes(part, value, *op))
+                            raw.split(|&b| b == b',').any(|part| {
+                                if part == b"." { return false; }
+                                cmp_bytes(part, value, *op)
+                            })
                         }
                         _ => false,
                     };
@@ -515,6 +520,41 @@ mod tests {
         }]);
         let rec = make_record(b"chr1\t100\t.\tA\tG\t50\tPASS\t.");
         assert!(!vm.evaluate(&rec).unwrap());
+    }
+
+    #[test]
+    fn vm_any_info_float_with_missing_dot() {
+        // Array like ".,0.6" — the `.` should be skipped, 0.6 should match
+        let mut vm = Vm::new(vec![OpCode::AnyCmpInfoFloat {
+            key: b"AF".to_vec(),
+            op: CmpOp::Gt,
+            value: 0.5,
+        }]);
+        let rec = make_record(b"chr1\t100\t.\tA\tG\t50\tPASS\tAF=.,0.6");
+        assert!(vm.evaluate(&rec).unwrap());
+    }
+
+    #[test]
+    fn vm_any_info_float_all_missing() {
+        // Array like ".,." — all missing, should not match
+        let mut vm = Vm::new(vec![OpCode::AnyCmpInfoFloat {
+            key: b"AF".to_vec(),
+            op: CmpOp::Gt,
+            value: 0.5,
+        }]);
+        let rec = make_record(b"chr1\t100\t.\tA\tG\t50\tPASS\tAF=.,.");
+        assert!(!vm.evaluate(&rec).unwrap());
+    }
+
+    #[test]
+    fn vm_any_info_int_with_missing_dot() {
+        let mut vm = Vm::new(vec![OpCode::AnyCmpInfoInt {
+            key: b"AC".to_vec(),
+            op: CmpOp::Gt,
+            value: 10,
+        }]);
+        let rec = make_record(b"chr1\t100\t.\tA\tG\t50\tPASS\tAC=.,15");
+        assert!(vm.evaluate(&rec).unwrap());
     }
 
     #[test]
