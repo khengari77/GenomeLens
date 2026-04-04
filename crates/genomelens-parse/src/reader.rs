@@ -9,18 +9,6 @@ pub enum FileFormat {
     Vcf,
 }
 
-/// Check if a gzip file is BGZF by inspecting the header.
-/// BGZF has FEXTRA flag (byte 3 bit 2) and "BC" subfield at bytes 12-13.
-fn is_bgzf(path: &Path) -> io::Result<bool> {
-    let mut file = File::open(path)?;
-    let mut buf = [0u8; 18];
-    let n = file.read(&mut buf)?;
-    if n < 14 {
-        return Ok(false);
-    }
-    Ok((buf[3] & 0x04) != 0 && buf[12] == b'B' && buf[13] == b'C')
-}
-
 /// Opens a file and returns a buffered reader that transparently decompresses gzip/BGZF.
 /// Detection is by magic bytes (0x1f 0x8b), not file extension.
 /// Uses flate2 MultiGzDecoder for sequential streaming (handles both gzip and BGZF).

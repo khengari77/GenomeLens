@@ -6,6 +6,7 @@ use super::{split_header, FastaRecord};
 /// Lightweight stats for a FASTA record, computed inline without buffering the sequence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FastaRecordStats {
+    pub id: Vec<u8>,
     pub length: usize,
     pub gc_count: usize,
     pub n_count: usize,
@@ -38,84 +39,96 @@ impl<R: BufRead> FastaReader<R> {
         }
     }
 
-    /// Yield the next FASTA record, borrowing from the internal record buffer.
-    ///
-    /// Returns `Ok(None)` at EOF. Each call invalidates the previous record.
-    pub fn next_record(&mut self) -> Result<Option<FastaRecord<'_>>> {
+    /// Read the next header line (without the leading '>').
+    /// Consumes from `peeked_header` first, otherwise reads lines until '>'.
+    fn read_header(&mut self) -> Result<Option<Vec<u8>>> {
         if self.done {
             return Ok(None);
         }
-
-        self.record_buf.clear();
-
-        // Get the header line — either from peeked or by reading
-        let header_line = if let Some(header) = self.peeked_header.take() {
-            header
-        } else {
-            // Read until we find a '>' line
-            loop {
-                self.line_buf.clear();
-                let bytes_read = self
-                    .reader
-                    .read_until(b'\n', &mut self.line_buf)
-                    .map_err(Error::Io)?;
-                if bytes_read == 0 {
-                    self.done = true;
-                    return Ok(None);
-                }
-                let line = trim_newline(&self.line_buf);
-                if line.is_empty() {
-                    continue;
-                }
-                if line[0] == b'>' {
-                    break line[1..].to_vec();
-                }
-                // Non-empty, non-header line before first record — skip or error
-                return Err(Error::InvalidFasta(format!(
-                    "expected '>' but found {:?}",
-                    line[0] as char
-                )));
-            }
-        };
-
-        // Store header in record_buf: [header_bytes \n sequence_bytes...]
-        // We'll track where the header ends so we can split later.
-        let header_len = header_line.len();
-        self.record_buf.extend_from_slice(&header_line);
-        self.record_buf.push(b'\n'); // separator
-
-        // Read sequence lines until next '>' or EOF
+        if let Some(header) = self.peeked_header.take() {
+            return Ok(Some(header));
+        }
         loop {
             self.line_buf.clear();
             let bytes_read = self
                 .reader
                 .read_until(b'\n', &mut self.line_buf)
                 .map_err(Error::Io)?;
-
             if bytes_read == 0 {
                 self.done = true;
-                break;
+                return Ok(None);
             }
-
             let line = trim_newline(&self.line_buf);
             if line.is_empty() {
                 continue;
             }
-
             if line[0] == b'>' {
-                // This is the next record's header — stash it
-                self.peeked_header = Some(line[1..].to_vec());
-                break;
+                return Ok(Some(line[1..].to_vec()));
             }
+            return Err(Error::InvalidFasta(format!(
+                "expected '>' but found {:?}",
+                line[0] as char
+            )));
+        }
+    }
 
-            // Append sequence bytes (no newlines)
-            self.record_buf.extend_from_slice(line);
+    /// Read sequence lines until the next '>' or EOF.
+    /// Returns each line to the caller via the `line_buf`. The caller must
+    /// process `trim_newline(&self.line_buf)` before the next iteration.
+    fn read_next_seq_line(&mut self) -> Result<Option<bool>> {
+        self.line_buf.clear();
+        let bytes_read = self
+            .reader
+            .read_until(b'\n', &mut self.line_buf)
+            .map_err(Error::Io)?;
+
+        if bytes_read == 0 {
+            self.done = true;
+            return Ok(None);
         }
 
-        // Build the FastaRecord from record_buf
-        // Layout: [header_bytes] [\n] [sequence_bytes]
+        let line = trim_newline(&self.line_buf);
+        if line.is_empty() {
+            return Ok(Some(false)); // skip empty lines
+        }
+
+        if line[0] == b'>' {
+            self.peeked_header = Some(line[1..].to_vec());
+            return Ok(None);
+        }
+
+        Ok(Some(true)) // has sequence data
+    }
+
+    /// Yield the next FASTA record, borrowing from the internal record buffer.
+    ///
+    /// Returns `Ok(None)` at EOF. Each call invalidates the previous record.
+    /// **Warning:** Buffers the entire sequence. For genome-scale contigs, prefer
+    /// `next_stats()` which uses O(1) memory.
+    pub fn next_record(&mut self) -> Result<Option<FastaRecord<'_>>> {
+        let header_line = match self.read_header()? {
+            Some(h) => h,
+            None => return Ok(None),
+        };
+
+        self.record_buf.clear();
+        let header_len = header_line.len();
+        self.record_buf.extend_from_slice(&header_line);
+        self.record_buf.push(b'\n');
+
+        loop {
+            match self.read_next_seq_line()? {
+                None => break,
+                Some(false) => continue,
+                Some(true) => {
+                    let line = trim_newline(&self.line_buf);
+                    self.record_buf.extend_from_slice(line);
+                }
+            }
+        }
+
         let header = &self.record_buf[..header_len];
-        let seq_start = header_len + 1; // skip the \n separator
+        let seq_start = header_len + 1;
         let seq_region = if seq_start <= self.record_buf.len() {
             &self.record_buf[seq_start..]
         } else {
@@ -143,84 +156,45 @@ impl<R: BufRead> FastaReader<R> {
     /// Count bases inline without buffering the sequence. O(1) memory regardless
     /// of sequence length. Use this for stats-only workflows on large genomes.
     pub fn next_stats(&mut self) -> Result<Option<FastaRecordStats>> {
-        if self.done {
-            return Ok(None);
-        }
-
-        // Get the header line — same logic as next_record()
-        let _header_line = if let Some(header) = self.peeked_header.take() {
-            header
-        } else {
-            loop {
-                self.line_buf.clear();
-                let bytes_read = self
-                    .reader
-                    .read_until(b'\n', &mut self.line_buf)
-                    .map_err(Error::Io)?;
-                if bytes_read == 0 {
-                    self.done = true;
-                    return Ok(None);
-                }
-                let line = trim_newline(&self.line_buf);
-                if line.is_empty() {
-                    continue;
-                }
-                if line[0] == b'>' {
-                    break line[1..].to_vec();
-                }
-                return Err(Error::InvalidFasta(format!(
-                    "expected '>' but found {:?}",
-                    line[0] as char
-                )));
-            }
+        let header_line = match self.read_header()? {
+            Some(h) => h,
+            None => return Ok(None),
         };
 
-        // Count bases inline — never store the sequence
+        let (id_bytes, _) = split_header(&header_line);
+        let id = id_bytes.to_vec();
+
         let mut length = 0usize;
         let mut gc_count = 0usize;
         let mut n_count = 0usize;
 
         loop {
-            self.line_buf.clear();
-            let bytes_read = self
-                .reader
-                .read_until(b'\n', &mut self.line_buf)
-                .map_err(Error::Io)?;
-
-            if bytes_read == 0 {
-                self.done = true;
-                break;
-            }
-
-            let line = trim_newline(&self.line_buf);
-            if line.is_empty() {
-                continue;
-            }
-
-            if line[0] == b'>' {
-                self.peeked_header = Some(line[1..].to_vec());
-                break;
-            }
-
-            // Count bases inline
-            for &b in line {
-                match b {
-                    b'G' | b'C' | b'g' | b'c' => {
-                        gc_count += 1;
-                        length += 1;
-                    }
-                    b'N' | b'n' => {
-                        n_count += 1;
-                        length += 1;
-                    }
-                    _ => {
-                        length += 1;
+            match self.read_next_seq_line()? {
+                None => break,
+                Some(false) => continue,
+                Some(true) => {
+                    let line = trim_newline(&self.line_buf);
+                    for &b in line {
+                        match b {
+                            b'G' | b'C' | b'g' | b'c' => {
+                                gc_count += 1;
+                                length += 1;
+                            }
+                            b'N' | b'n' => {
+                                n_count += 1;
+                                length += 1;
+                            }
+                            _ => {
+                                length += 1;
+                            }
+                        }
                     }
                 }
             }
         }
 
         Ok(Some(FastaRecordStats {
+            id,
             length,
             gc_count,
             n_count,

@@ -1,7 +1,14 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use genomelens_core::{Error, Result, VariantType, VcfRecordSummary};
 use memchr::memchr;
+
+/// A parsed INFO key-value entry, borrowing from the raw VCF line.
+struct InfoEntry<'a> {
+    key: &'a [u8],
+    /// `None` for boolean flags (key present without `=`).
+    value: Option<&'a [u8]>,
+}
 
 /// A single VCF data line with lazy, on-demand column parsing.
 ///
@@ -17,6 +24,8 @@ pub struct VcfRecord<'a> {
     tab_offsets: [Cell<usize>; 9],
     /// How many tabs have been found so far.
     tabs_found: Cell<usize>,
+    /// Lazily parsed INFO key-value pairs. `None` = not yet parsed.
+    info_cache: RefCell<Option<Vec<InfoEntry<'a>>>>,
 }
 
 impl<'a> VcfRecord<'a> {
@@ -205,7 +214,10 @@ impl<'a> VcfRecord<'a> {
         Ok(self.filter()?.split(|&b| b == b';'))
     }
 
-    /// Lazy INFO lookup: scan the INFO bytes for a specific key.
+    /// Lazy INFO lookup with per-record caching.
+    ///
+    /// On the first call, parses the INFO string once and caches all key-value
+    /// pairs. Subsequent lookups scan the cache (no re-parsing).
     ///
     /// Returns:
     /// - `None` if the key is not found
@@ -217,31 +229,47 @@ impl<'a> VcfRecord<'a> {
             return Ok(None);
         }
 
-        let mut pos = 0;
-
-        loop {
-            if pos >= info.len() {
-                return Ok(None);
-            }
-
-            let field_end = match memchr(b';', &info[pos..]) {
-                Some(offset) => pos + offset,
-                None => info.len(),
-            };
-
-            let field = &info[pos..field_end];
-
-            if let Some(eq_offset) = memchr(b'=', field) {
-                let field_key = &field[..eq_offset];
-                if field_key == key {
-                    return Ok(Some(Some(&field[eq_offset + 1..])));
+        // Populate cache on first access
+        {
+            let mut cache = self.info_cache.borrow_mut();
+            if cache.is_none() {
+                let mut entries = Vec::new();
+                let mut pos = 0;
+                loop {
+                    if pos >= info.len() {
+                        break;
+                    }
+                    let field_end = match memchr(b';', &info[pos..]) {
+                        Some(offset) => pos + offset,
+                        None => info.len(),
+                    };
+                    let field = &info[pos..field_end];
+                    if let Some(eq) = memchr(b'=', field) {
+                        entries.push(InfoEntry {
+                            key: &field[..eq],
+                            value: Some(&field[eq + 1..]),
+                        });
+                    } else {
+                        entries.push(InfoEntry {
+                            key: field,
+                            value: None,
+                        });
+                    }
+                    pos = field_end + 1;
                 }
-            } else if field == key {
-                return Ok(Some(None));
+                *cache = Some(entries);
             }
-
-            pos = field_end + 1;
         }
+
+        // Lookup in cache
+        let cache = self.info_cache.borrow();
+        let entries = cache.as_ref().unwrap();
+        for entry in entries {
+            if entry.key == key {
+                return Ok(Some(entry.value));
+            }
+        }
+        Ok(None)
     }
 
     /// Classify variant type by comparing REF and first ALT allele.
@@ -328,6 +356,7 @@ pub fn parse_line(line: &[u8]) -> VcfRecord<'_> {
         raw: line,
         tab_offsets: core::array::from_fn(|_| Cell::new(0)),
         tabs_found: Cell::new(0),
+        info_cache: RefCell::new(None),
     }
 }
 

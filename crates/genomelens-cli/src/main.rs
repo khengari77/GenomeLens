@@ -181,16 +181,20 @@ fn cmd_head_fasta(reader: impl BufRead, n: usize) -> genomelens_core::Result<()>
     table.set_header(vec!["#", "ID", "Length", "GC%"]);
 
     let mut count = 0;
-    while let Some(rec) = fasta.next_record()? {
+    while let Some(stats) = fasta.next_stats()? {
         if count >= n {
             break;
         }
-        let summary = rec.summarize();
+        let gc_pct = if stats.length > 0 {
+            stats.gc_count as f64 / stats.length as f64 * 100.0
+        } else {
+            0.0
+        };
         table.add_row(vec![
             (count + 1).to_string(),
-            summary.id.clone(),
-            summary.length.to_string(),
-            format!("{:.1}%", summary.gc_content() * 100.0),
+            String::from_utf8_lossy(&stats.id).into_owned(),
+            stats.length.to_string(),
+            format!("{:.1}%", gc_pct),
         ]);
         count += 1;
     }
